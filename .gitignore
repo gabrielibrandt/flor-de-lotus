@@ -1,0 +1,13 @@
+node_modules
+.next
+.env
+*.db
+*.db-journal
+backups/
+coverage/
+next-env.d.ts
+tsconfig.tsbuildinfo
+src/generated/
+*.db-wal
+*.db-shm
+test.db*

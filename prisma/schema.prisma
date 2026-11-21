@@ -1,0 +1,309 @@
+// Modelo de dados — Flor de Lótus
+// Desenvolvimento: SQLite. Produção: troque o provider para "postgresql" (ver README).
+// Valores de "enum" são guardados como String e validados em src/lib/constants.ts
+// (compatível com SQLite e PostgreSQL).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// Conta de acesso. role: "ADMIN" | "PATIENT"
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         String   @default("PATIENT")
+  name         String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  patient            Patient?
+  sessions           Session[]
+  notifications      Notification[]
+  passwordResets     PasswordResetToken[]
+  auditLogs          AuditLog[]           @relation("AuditActor")
+  answerRevisions    AnswerRevision[]
+  practitionerNotes  PractitionerNote[]
+  reports            Report[]
+
+  @@index([role])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  userAgent  String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdById String?
+
+  @@index([userId])
+}
+
+model Patient {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName           String
+  preferredName      String
+  consentAt          DateTime
+  privacyVersion     String
+  passwordResetRequestedAt DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  anamneses          Anamnesis[]
+  appointments       Appointment[]
+  practitionerNotes  PractitionerNote[]
+  correctionRequests CorrectionRequest[]
+  dataRequests       DataRequest[]
+
+  @@index([fullName])
+}
+
+model Question {
+  id                String  @id @default(cuid())
+  number            Int     @unique
+  code              String  @unique
+  text              String
+  helpText          String?
+  category          String
+  categoryOrder     Int
+  summaryCategory   String
+  /// short_text | long_text | composite | choice
+  fieldType         String
+  /// JSON: subcampos (composite) ou opções (choice)
+  config            String?
+  required          Boolean @default(true)
+  allowNotApplicable Boolean @default(false)
+  allowPreferNot    Boolean @default(false)
+  isActive          Boolean @default(true)
+
+  answers           Answer[]
+  correctionRequests CorrectionRequest[]
+}
+
+/// status: NOT_STARTED | IN_PROGRESS | SUBMITTED | REVIEWED
+/// "Atrasada" é derivada: não enviada e prazo vencido.
+model Anamnesis {
+  id              String    @id @default(cuid())
+  patientId       String
+  patient         Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  sequence        Int
+  isFirst         Boolean   @default(false)
+  status          String    @default("NOT_STARTED")
+  consultationAt  DateTime?
+  dueAt           DateTime?
+  appointmentId   String?   @unique
+  appointment     Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  releasedById    String?
+  releasedAt      DateTime  @default(now())
+  startedAt       DateTime?
+  lastSavedAt     DateTime?
+  submittedAt     DateTime?
+  submittedLate   Boolean   @default(false)
+  reviewedAt      DateTime?
+  adminViewedAt   DateTime?
+  nearDueNotifiedAt DateTime?
+  overdueNotifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  answers            Answer[]
+  notes              PractitionerNote[]
+  correctionRequests CorrectionRequest[]
+  reports            Report[]
+
+  @@unique([patientId, sequence])
+  @@index([status])
+  @@index([dueAt])
+  @@index([submittedAt])
+}
+
+model Answer {
+  id          String   @id @default(cuid())
+  anamnesisId String
+  anamnesis   Anamnesis @relation(fields: [anamnesisId], references: [id], onDelete: Cascade)
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  /// Texto simples ou JSON (composite/choice)
+  value       String   @default("")
+  /// NOT_APPLICABLE | PREFER_NOT_TO_ANSWER | null
+  skipReason  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  revisions   AnswerRevision[]
+
+  @@unique([anamnesisId, questionId])
+}
+
+/// Histórico imutável de correções feitas após o envio.
+model AnswerRevision {
+  id                  String   @id @default(cuid())
+  answerId            String
+  answer              Answer   @relation(fields: [answerId], references: [id], onDelete: Cascade)
+  previousValue       String
+  previousSkipReason  String?
+  newValue            String
+  newSkipReason       String?
+  reason              String
+  changedById         String
+  changedBy           User     @relation(fields: [changedById], references: [id], onDelete: Restrict)
+  correctionRequestId String?
+  correctionRequest   CorrectionRequest? @relation(fields: [correctionRequestId], references: [id], onDelete: SetNull)
+  changedAt           DateTime @default(now())
+
+  @@index([answerId])
+}
+
+/// Observações exclusivamente internas da profissional.
+model PractitionerNote {
+  id          String    @id @default(cuid())
+  patientId   String
+  patient     Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  anamnesisId String?
+  anamnesis   Anamnesis? @relation(fields: [anamnesisId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User      @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  content     String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([patientId])
+  @@index([anamnesisId])
+}
+
+/// origin: PATIENT | PRACTITIONER
+/// status: OPEN | ANSWERED | RESOLVED | REJECTED
+model CorrectionRequest {
+  id            String    @id @default(cuid())
+  anamnesisId   String
+  anamnesis     Anamnesis @relation(fields: [anamnesisId], references: [id], onDelete: Cascade)
+  patientId     String
+  patient       Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  questionId    String?
+  question      Question? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+  origin        String
+  message       String
+  patientReply  String?
+  repliedAt     DateTime?
+  status        String    @default("OPEN")
+  resolution    String?
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  revisions     AnswerRevision[]
+
+  @@index([status])
+  @@index([anamnesisId])
+}
+
+/// status: SCHEDULED | COMPLETED | CANCELED
+model Appointment {
+  id           String    @id @default(cuid())
+  title        String
+  description  String?
+  startsAt     DateTime
+  durationMin  Int       @default(60)
+  patientId    String?
+  patient      Patient?  @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  privateNotes String?
+  status       String    @default("SCHEDULED")
+  canceledAt   DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  anamnesis    Anamnesis?
+
+  @@index([startsAt])
+  @@index([patientId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
+/// type: FULL | SUMMARY. O PDF fica armazenado no banco (nunca em URL pública).
+model Report {
+  id            String    @id @default(cuid())
+  anamnesisId   String
+  anamnesis     Anamnesis @relation(fields: [anamnesisId], references: [id], onDelete: Cascade)
+  type          String
+  generatedById String
+  generatedBy   User      @relation(fields: [generatedById], references: [id], onDelete: Restrict)
+  fileName      String
+  pdf           Bytes
+  sizeBytes     Int
+  createdAt     DateTime  @default(now())
+
+  @@index([anamnesisId])
+}
+
+/// Solicitações LGPD do titular. type: ACCESS | CORRECTION | DELETION
+/// status: OPEN | DONE | REJECTED
+model DataRequest {
+  id          String    @id @default(cuid())
+  patientId   String
+  patient     Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  type        String
+  details     String?
+  status      String    @default("OPEN")
+  response    String?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([status])
+}
+
+/// Registro de ações importantes. Sem cascata: o log sobrevive à exclusão de dados
+/// (o campo "details" nunca guarda conteúdo das respostas).
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  details    String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
